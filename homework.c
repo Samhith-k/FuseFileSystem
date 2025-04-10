@@ -134,6 +134,7 @@ int parse(char *path, char **argv)
             break;
         if (strlen(argv[i]) > MAX_NAME_LEN)
             argv[i][MAX_NAME_LEN] = '\0';
+        path = NULL;
     }
     return i;
 }
@@ -194,7 +195,12 @@ int fs_getattr(const char *path, struct stat *sb)
     }
     char *tokens[MAX_PATH_LEN];
     int num_tokens = parse(c_path, tokens);
+    printf("num_tokens: %d\n", num_tokens);
     int inum = translate(num_tokens, tokens);
+    for (int i = 0; i < num_tokens; i++)
+    {
+        printf("tokens[%d]: %s\n", i, tokens[i]);
+    }
     free(c_path);
     if (inum < 0)
         return inum;
