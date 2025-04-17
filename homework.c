@@ -66,14 +66,9 @@ int bit_test(unsigned char *map, int i)
 static int find_free_block(void)
 {
     /* We know the total disk size from superblock.disk_size */
-    for (int i = 0; i < (int)superblock.disk_size; i++)
+    /* We know the first 3 blocks are used (superblock, bitmap, root inode) */
+    for (int i = 3; i < (int)superblock.disk_size; i++)
     {
-        /* skip blocks 0 and 1 since they are superblock & bitmap,
-         * and block 2 is root.  Typically we treat them as in-use from start.
-         */
-        if (i < 3)
-            continue;
-
         if (!bit_test(g_bitmap, i))
         {
             // Found a free block
@@ -111,12 +106,6 @@ static int free_block(int block_num)
     return 0;
 }
 
-/***********************************************************************
- *                      Path / Directory Helpers
- ***********************************************************************/
-/**
- * Utility: read an inode from disk by its block number (inum).
- */
 static int read_inode(int inum, struct fs_inode *inode)
 {
     if (inum < 0 || inum >= (int)superblock.disk_size)
@@ -377,92 +366,37 @@ void *fs_init(struct fuse_conn_info *conn)
     // Read superblock
     if (block_read(&superblock, 0, 1) < 0)
     {
-        // fprintf(stderr, "Error: Failed to read superblock\n");
-        goto init_fresh_fs;
+        fprintf(stderr, "Error: Failed to read superblock\n");
     }
 
     // Verify superblock
     if (superblock.magic != FS_MAGIC)
     {
-        // fprintf(stderr, "Warning: Invalid superblock magic\n");
-        goto init_fresh_fs;
+        fprintf(stderr, "Warning: Invalid superblock magic\n");
     }
 
     // Read bitmap
     if (block_read(g_bitmap, 1, 1) < 0)
     {
-        // fprintf(stderr, "Error: Failed to read bitmap\n");
-        goto init_fresh_fs;
+        fprintf(stderr, "Error: Failed to read bitmap\n");
     }
 
     // Read root inode
     if (block_read(&g_root_node, ROOT_INUM, 1) < 0)
     {
-        // fprintf(stderr, "Error: Failed to read root inode\n");
-        goto init_fresh_fs;
+        fprintf(stderr, "Error: Failed to read root inode\n");
     }
 
     // Verify root inode is a directory
     if (!S_ISDIR(g_root_node.mode))
     {
-        // fprintf(stderr, "Warning: Root inode is not a directory\n");
-        goto init_fresh_fs;
+        fprintf(stderr, "Warning: Root inode is not a directory\n");
     }
 
-    // Ensure blocks 0, 1, 2 are marked as used
+    // mark blocks 0, 1, 2  as used
     bit_set(g_bitmap, 0);
     bit_set(g_bitmap, 1);
     bit_set(g_bitmap, 2);
-    // if (block_write(g_bitmap, 1, 1) < 0)
-    // {
-    //     fprintf(stderr, "Error: Failed to update bitmap\n");
-    // }
-
-    // Return if everything looks good
-    // fprintf(stderr, "Successfully loaded existing filesystem\n");
-    return NULL;
-
-init_fresh_fs:
-    // fprintf(stderr, "Initializing fresh filesystem...\n");
-
-    // Initialize superblock
-    superblock.magic = FS_MAGIC;
-    superblock.disk_size = 400;
-    if (block_write(&superblock, 0, 1) < 0)
-    {
-        // fprintf(stderr, "Error: Failed to write superblock\n");
-        return NULL;
-    }
-
-    // Initialize bitmap (clear all bits first)
-    memset(g_bitmap, 0, sizeof(g_bitmap));
-
-    // Mark first 3 blocks as used (superblock, bitmap, root)
-    bit_set(g_bitmap, 0);
-    bit_set(g_bitmap, 1);
-    bit_set(g_bitmap, 2);
-
-    if (block_write(g_bitmap, 1, 1) < 0)
-    {
-        // fprintf(stderr, "Error: Failed to write bitmap\n");
-        return NULL;
-    }
-
-    // Initialize root directory
-    memset(&g_root_node, 0, sizeof(g_root_node));
-    g_root_node.mode = S_IFDIR | 0755; // Directory with rwxr-xr-x
-    g_root_node.size = BLOCK_SIZE;     // One block for directory entries
-    g_root_node.ctime = g_root_node.mtime = time(NULL);
-
-    if (write_inode(ROOT_INUM, &g_root_node) < 0)
-    {
-        // fprintf(stderr, "Error: Failed to write root inode\n");
-        return NULL;
-    }
-
-    // fprintf(stderr, "Filesystem initialization complete\n");
-
-    // fprintf(stderr, "fs_init: Filesystem initialized, root inode mode: %o, size: %d\n",g_root_node.mode, g_root_node.size);
 
     return NULL;
 }
@@ -586,20 +520,6 @@ int fs_getattr(const char *path, struct stat *sb)
         return -ENOMEM;
     }
 
-    // Handle root directory case specially
-    if (strcmp(path, "/") == 0)
-    {
-        free(c_path);
-        memset(sb, 0, sizeof(struct stat));
-        sb->st_mode = g_root_node.mode;
-        sb->st_size = g_root_node.size;
-        sb->st_nlink = 1;
-        sb->st_atime = sb->st_ctime = sb->st_mtime = g_root_node.mtime;
-        sb->st_uid = g_root_node.uid;
-        sb->st_gid = g_root_node.gid;
-        return 0;
-    }
-
     char *tokens[MAX_PATH_LEN];
     int num_tokens = parse(c_path, tokens);
     int inum = translate(num_tokens, tokens);
@@ -649,17 +569,9 @@ int fs_readdir(const char *path, void *ptr, fuse_fill_dir_t filler,
     int num_tokens = parse(c_path, tokens);
     int inum;
 
-    // Handle root directory specially
-    if (strcmp(path, "/") == 0)
-    {
-        inum = ROOT_INUM;
-    }
-    else
-    {
-        inum = translate(num_tokens, tokens);
-    }
-
+    inum = translate(num_tokens, tokens);
     free(c_path);
+
     if (inum < 0)
         return inum;
 
@@ -1235,15 +1147,14 @@ int fs_rename(const char *src_path, const char *dst_path)
     if (src_count > 1)
     {
         parent_inum = translate(src_count - 1, src_tokens);
+        free(src_copy);
+        free(dst_copy);
         if (parent_inum < 0)
         {
-            free(src_copy);
-            free(dst_copy);
+
             return parent_inum;
         }
     }
-    free(src_copy);
-    free(dst_copy);
 
     // Read the parent's inode.
     struct fs_inode parent_inode;
@@ -1715,8 +1626,6 @@ int fs_statfs(const char *path, struct statvfs *st)
     /* Set block and fragment sizes */
     st->f_bsize = BLOCK_SIZE;
     st->f_frsize = BLOCK_SIZE;
-
-    /* Total blocks should be exactly 400 as expected by the test */
     st->f_blocks = 400;
 
     /* Count used blocks */

@@ -247,7 +247,7 @@ START_TEST(test_read_full)
                       test_files[i].path, cksum, test_files[i].cksum);
 
         /* Verify no overread - check pattern outside expected data */
-        ck_assert_int_eq(buf[size + 10], 0xAA);
+        ck_assert_int_eq((unsigned char)buf[size + 10], 0xAA);
 
         free(buf);
     }
